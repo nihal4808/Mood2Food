@@ -55,7 +55,6 @@ export function GetKeyPage() {
 
   const usageCurl = `curl -X POST https://mood2food-api.onrender.com/recommend \\
   -H "Content-Type: application/json" \\
-  -H "X-API-Key: ${key || '<your-key>'}" \\
   -d '{
     "mood_text": "I feel happy today",
     "time_of_day": "lunch",
@@ -65,8 +64,7 @@ export function GetKeyPage() {
   const usageJs = `await fetch("https://mood2food-api.onrender.com/recommend", {
   method: "POST",
   headers: {
-    "Content-Type": "application/json",
-    "X-API-Key": "${key || '<your-key>'}",
+    "Content-Type": "application/json"
   },
   body: JSON.stringify({
     mood_text: "I feel happy today",
@@ -141,7 +139,8 @@ export function GetKeyPage() {
               Generate key
             </button>
             <div className="muted">
-              Full authentication coming soon.
+              API keys are currently in open beta. Rate limiting and authentication
+              will be enforced in the production release.
             </div>
           </div>
         </form>
@@ -157,8 +156,8 @@ export function GetKeyPage() {
               </button>
             </div>
             <div className="muted">
-              For now, the backend may not enforce keys — keep this for future
-              authentication.
+              Save this key — it will be required for all requests once authentication
+              is enabled.
             </div>
           </div>
         </Section>
@@ -170,8 +169,8 @@ export function GetKeyPage() {
           <CodeBlock language="javascript" code={usageJs} />
         </div>
         <div className="alert alert--info">
-          Note: authentication is not enforced yet. The key format and header may
-          change when full auth launches.
+          API keys will be used for authentication and rate limiting in the
+          production release. Save your key for future use.
         </div>
         <div className="muted">Selected: {useCase} • {plan}</div>
       </Section>

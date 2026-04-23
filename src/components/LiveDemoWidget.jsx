@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { recommendFood } from '../api/mood2food'
+import { recommendFood, validateApiKey } from '../api/mood2food'
 import { useTimeOfDay } from '../hooks/useTimeOfDay'
 import { useDelayedFlag } from '../hooks/useDelayedFlag'
 
@@ -9,10 +9,40 @@ const DIET_OPTIONS = [
   { value: 'vegan', label: 'Vegan' },
 ]
 
+const COLD_START_WARNING_SESSION_KEY = 'm2f:coldStartWarningSeen'
+const API_KEY_STORAGE_KEY = 'm2f:apiKey'
+
 function formatScore(score) {
   if (typeof score !== 'number' || Number.isNaN(score)) return null
   const clamped = Math.max(0, Math.min(1, score))
   return `${Math.round(clamped * 100)}%`
+}
+
+function getFriendlyErrorMessage(err) {
+  if (err?.name === 'AbortError') return 'Request timed out. Please try again.'
+
+  const status = err?.status
+  if (typeof status === 'number') {
+    if (status === 401 || status === 403) {
+      return 'Invalid API key'
+    }
+    if (status >= 500) {
+      return 'The Mood2Food API is temporarily unavailable. Please try again shortly.'
+    }
+    if (status === 429) {
+      return 'Too many requests right now. Please wait a moment and try again.'
+    }
+    if (status === 400) {
+      return 'Invalid request. Please check your inputs and try again.'
+    }
+    return 'Request failed. Please try again.'
+  }
+
+  if (err instanceof TypeError) {
+    return 'Could not reach the Mood2Food API. Please check your connection and try again.'
+  }
+
+  return 'Something went wrong. Please try again.'
 }
 
 function DishIllustration({ title = 'Dish' }) {
@@ -82,6 +112,15 @@ function Chip({ children, tone = 'default' }) {
 export function LiveDemoWidget({ compact = false }) {
   const timeOfDay = useTimeOfDay()
 
+  const [apiKey, setApiKey] = useState(() => {
+    try {
+      return window.localStorage.getItem(API_KEY_STORAGE_KEY) || ''
+    } catch {
+      return ''
+    }
+  })
+  const [remainingCallsToday, setRemainingCallsToday] = useState(null)
+
   const [moodText, setMoodText] = useState('')
   const [dietType, setDietType] = useState('veg')
 
@@ -89,13 +128,32 @@ export function LiveDemoWidget({ compact = false }) {
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
 
-  const showWaking = useDelayedFlag(loading, 5000)
+  const coldStartDelayReached = useDelayedFlag(loading, 5000)
+
+  const [coldStartWarningVisible, setColdStartWarningVisible] = useState(false)
+  const [coldStartWarningSeen, setColdStartWarningSeen] = useState(() => {
+    try {
+      return window.sessionStorage.getItem(COLD_START_WARNING_SESSION_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+
   const abortRef = useRef(null)
 
   const canSubmit = useMemo(() => moodText.trim().length > 0 && !loading, [
     moodText,
     loading,
   ])
+
+  useEffect(() => {
+    try {
+      if (apiKey) window.localStorage.setItem(API_KEY_STORAGE_KEY, apiKey)
+      else window.localStorage.removeItem(API_KEY_STORAGE_KEY)
+    } catch {
+      // ignore
+    }
+  }, [apiKey])
 
   const food = result?.recommended_food || null
   const emotion = result?.detected_emotion || null
@@ -108,10 +166,34 @@ export function LiveDemoWidget({ compact = false }) {
     }
   }, [])
 
+  useEffect(() => {
+    if (!loading) {
+      setColdStartWarningVisible(false)
+      return
+    }
+
+    if (coldStartDelayReached && !coldStartWarningSeen) {
+      setColdStartWarningVisible(true)
+      setColdStartWarningSeen(true)
+      try {
+        window.sessionStorage.setItem(COLD_START_WARNING_SESSION_KEY, '1')
+      } catch {
+        // ignore
+      }
+    }
+  }, [loading, coldStartDelayReached, coldStartWarningSeen])
+
   async function onSubmit(e) {
     e.preventDefault()
     setError(null)
     setResult(null)
+    setRemainingCallsToday(null)
+
+    const keyTrimmed = apiKey.trim()
+    if (!keyTrimmed) {
+      setError('Invalid API key')
+      return
+    }
 
     if (abortRef.current) abortRef.current.abort()
     const controller = new AbortController()
@@ -121,21 +203,27 @@ export function LiveDemoWidget({ compact = false }) {
 
     try {
       setLoading(true)
+
+      const validation = await validateApiKey(keyTrimmed, { signal: controller.signal })
+      if (!validation?.valid) {
+        setError('Invalid API key')
+        return
+      }
+      if (typeof validation?.remainingCalls === 'number') {
+        setRemainingCallsToday(validation.remainingCalls)
+      }
+
       const data = await recommendFood(
         {
           moodText: moodText.trim(),
           timeOfDay,
           dietType,
         },
-        { signal: controller.signal },
+        { signal: controller.signal, apiKey: keyTrimmed },
       )
       setResult(data)
     } catch (err) {
-      if (err?.name === 'AbortError') {
-        setError('Request timed out. Please try again.')
-      } else {
-        setError(err?.message || 'Something went wrong')
-      }
+      setError(getFriendlyErrorMessage(err))
     } finally {
       window.clearTimeout(kill)
       setLoading(false)
@@ -150,10 +238,31 @@ export function LiveDemoWidget({ compact = false }) {
           <div className="demo__muted">
             Time detected: <span className="pill">{timeOfDay}</span>
           </div>
+            {typeof remainingCallsToday === 'number' ? (
+              <div className="demo__muted">
+                Remaining calls today: <span className="pill">{remainingCallsToday}</span>
+              </div>
+            ) : null}
         </div>
       </div>
 
       <form className="demo__form" onSubmit={onSubmit}>
+        <label className="field">
+          <span className="field__label">API key</span>
+          <input
+            className="input"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="Paste your API key"
+            autoComplete="off"
+          />
+          <div className="demo__muted">
+            <a className="link" href="/get-key">
+              Get a free key
+            </a>
+          </div>
+        </label>
+
         <label className="field">
           <span className="field__label">Mood</span>
           <input
@@ -187,16 +296,13 @@ export function LiveDemoWidget({ compact = false }) {
 
       {loading ? (
         <div className="demo__status" role="status" aria-live="polite">
-          {showWaking ? (
-            <div>
-              <div className="demo__waking">Waking up AI model…</div>
-              <div className="demo__muted">
-                First request can take up to ~60 seconds.
-              </div>
+          <div className="demo__muted">Talking to Mood2Food AI…</div>
+          {coldStartWarningVisible ? (
+            <div className="alert" role="alert">
+              First request may take 60 seconds while the server wakes up.
+              Subsequent requests are instant.
             </div>
-          ) : (
-            <div className="demo__muted">Talking to Mood2Food AI…</div>
-          )}
+          ) : null}
         </div>
       ) : null}
 
